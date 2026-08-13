@@ -1,3 +1,4 @@
 *.zip*
 .*env*
 __pycache__/
+_sdk_extracted/
