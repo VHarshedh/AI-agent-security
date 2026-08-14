@@ -2,3 +2,7 @@
 .*env*
 __pycache__/
 _sdk_extracted/
+.claude
+.codex
+Claude.md
+.cursorrules
