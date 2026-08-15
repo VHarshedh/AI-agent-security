@@ -11,7 +11,7 @@ from aicomp_sdk.core.env.sandbox import SandboxEnv
 from aicomp_sdk.agents.deterministic_agent import VulnerableDeterministicAgent
 from aicomp_sdk.guardrails.optimal import Guardrail
 
-import attack_v5_goexplore_plus as attack
+import Jedv28_advanced as attack
 
 FIXTURES_DIR = Path("_sdk_extracted/aicomp_sdk/fixtures")
 
@@ -25,7 +25,7 @@ env = SandboxEnv(
 )
 
 algo = attack.AttackAlgorithm()
-cfg = AttackRunConfig(time_budget_s=5)
+cfg = AttackRunConfig(time_budget_s=90)
 
 t0 = time.time()
 candidates = algo.run(env, cfg)
