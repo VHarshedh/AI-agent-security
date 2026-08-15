@@ -205,12 +205,11 @@ class AttackAlgorithm(AttackAlgorithmBase):
             seen_msgs.add(key)
             tr = env.export_trace_dict()
             preds = eval_predicates(tr)
-            if preds:
-                findings.append(AttackCandidate.from_messages(msgs)
-                                 if hasattr(AttackCandidate, 'from_messages')
-                                 else AttackCandidate(user_messages=tuple(msgs)))
-                return True
-            return False
+            
+            findings.append(AttackCandidate.from_messages(msgs)
+                             if hasattr(AttackCandidate, 'from_messages')
+                             else AttackCandidate(user_messages=tuple(msgs)))
+            return True
 
         def _safe_interact(msg):
             try:
@@ -309,8 +308,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
                         depth=chosen.depth + 1,
                         predicate_count=len(preds),
                     )
-
-                if preds:
+                    
                     msgs = list(tr.get("user_messages", []))
                     confirm(msgs)
 
