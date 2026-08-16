@@ -20,13 +20,23 @@ even when running silently (deterministic agent generates no LLM output).
 """
 
 import sys
+import os
 import json
 import time
 import threading
+import argparse
 import requests
 import traceback
 from pathlib import Path
 from typing import Sequence, Any
+
+# Ensure UTF-8 output on Windows consoles
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # ── SDK path setup ────────────────────────────────────────────────────────────
 EXTRACT_DIR = Path("_sdk_extracted")
@@ -63,19 +73,16 @@ except ImportError:
     traceback.print_exc()
     sys.exit(1)
 
-# ── Attack file loader ────────────────────────────────────────────────────────
 import importlib.util
-ATTACK_FILE = sys.argv[1] if len(sys.argv) > 1 else "attack.py"
-print(f"📄 Loading attack file: {ATTACK_FILE}")
-spec = importlib.util.spec_from_file_location("attack_module", ATTACK_FILE)
-attack_module = importlib.util.module_from_spec(spec)
-try:
+
+def load_attack_algorithm(attack_file_path: str):
+    print(f"📄 Loading attack file: {attack_file_path}")
+    spec = importlib.util.spec_from_file_location("attack_module", attack_file_path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"Could not load attack file: {attack_file_path}")
+    attack_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(attack_module)
-except Exception:
-    print("❌ Failed to import attack file:")
-    traceback.print_exc()
-    sys.exit(1)
-AttackAlgorithm = attack_module.AttackAlgorithm
+    return attack_module.AttackAlgorithm
 
 FIXTURES_DIR = Path("_sdk_extracted/aicomp_sdk/fixtures")
 
@@ -181,10 +188,6 @@ class OllamaAgent:
                 print(f"    ❌ Ollama error: {e}")
             raise InvalidModelOutputError(f"Ollama unreachable: {e}") from e
 
-        preview = reply.replace("\n", " ")[:80]
-        if self.verbose:
-            print(f"    🤖 LLM: {preview}{'...' if len(reply) > 80 else ''}")
-
         # ── Parse response ────────────────────────────────────────────────
         tool_calls = message_obj.get("tool_calls", [])
         
@@ -204,6 +207,9 @@ class OllamaAgent:
                 tc = tool_calls[0]["function"]
                 tool_name = tc.get("name")
                 tool_args = tc.get("arguments", {})
+
+                if self.verbose:
+                    print(f"    🔧 LLM Tool Call: {tool_name}({tool_args})")
 
                 if tool_name:
                     # ── Stale-loop guard (structural, not advisory) ───────
@@ -230,7 +236,10 @@ class OllamaAgent:
             except Exception:
                 pass
 
-        # Plain text / refusal — clear stale tracker
+        # Plain text / refusal / final response — clear stale tracker
+        if self.verbose:
+            preview = reply.replace("\n", " ")[:80]
+            print(f"    🤖 LLM Response: {preview}{'...' if len(reply) > 80 else ''}")
         self._prev_tool_call = None
         return FinalResponseDecision(text=reply)
 
@@ -269,13 +278,13 @@ def score_candidates(candidates: list[AttackCandidate], env: SandboxEnv) -> None
         msgs = list(getattr(c, "user_messages", getattr(c, "prompts", [])))
         print(f"    [{i+1}] {len(msgs)} turn(s): {[m[:50] for m in msgs]}")
 
-    print(f"\n  ⏳ Evaluating {len(candidates)} candidates for cell signatures & predicates...")
+    print(f"\n  ⏳ Evaluating all {len(candidates)} candidates that passed during the run...")
     findings = []
     hits = 0
     t_start = time.time()
     total_cands = len(candidates)
     for idx, cand in enumerate(candidates, 1):
-        if idx % 250 == 0 or idx == total_cands:
+        if idx % 50 == 0 or idx == total_cands:
             print(f"    ... evaluated {idx}/{total_cands} candidates ({time.time() - t_start:.1f}s)", flush=True)
         env.reset()
         msgs = list(getattr(cand, "user_messages", getattr(cand, "prompts", [])))
@@ -329,8 +338,21 @@ def _start_ticker(label: str, candidates_ref: list) -> threading.Event:
 # Main harness
 # ===========================================================================
 if __name__ == "__main__":
-    TIME_BUDGET_S = 3600   # seconds per agent run
+    parser = argparse.ArgumentParser(description="Dual-Agent Test Harness for AI Agent Security attacks")
+    parser.add_argument("attack_file", nargs="?", default="attack.py", help="Path to attack Python file (default: attack.py)")
+    parser.add_argument("--budget", type=int, default=3600, help="Time budget in seconds per agent (default: 3600)")
+    parser.add_argument("--only-ollama", action="store_true", help="Run only the Ollama LLM agent test")
+    parser.add_argument("--only-det", action="store_true", help="Run only the deterministic mock agent test")
+    args = parser.parse_args()
 
+    try:
+        AttackAlgorithm = load_attack_algorithm(args.attack_file)
+    except Exception:
+        print("❌ Failed to import attack file:")
+        traceback.print_exc()
+        sys.exit(1)
+
+    TIME_BUDGET_S = args.budget
     print(f"⏱️  Time budget per agent: {TIME_BUDGET_S}s")
     print("=" * 60)
 
@@ -343,68 +365,74 @@ if __name__ == "__main__":
         pass
 
     # ════════════════════════════════════════════════════════════════════════
-    # RUN 1 — VulnerableDeterministicAgent (Kaggle replica)
+    # RUN 1 — VulnerableDeterministicAgent (Heuristic/Mock SDK Agent)
     # ════════════════════════════════════════════════════════════════════════
-    print("\n" + "═" * 60)
-    print("▶  RUN 1 — VulnerableDeterministicAgent  (Kaggle replica)")
-    print("═" * 60)
+    if not args.only_ollama:
+        print("\n" + "═" * 60)
+        print("▶  RUN 1 — VulnerableDeterministicAgent  (Heuristic/Mock SDK Agent)")
+        print("   Note: This agent uses hardcoded heuristics (for indirect injections).")
+        print("   Direct exfiltration prompts fire against real LLMs (Run 2 / Kaggle).")
+        print("═" * 60)
 
-    det_agent = VulnerableDeterministicAgent()
-    det_env   = SandboxEnv(
-        seed=42,
-        fixtures_dir=FIXTURES_DIR,
-        agent=det_agent,
-        guardrail=Guardrail(),
-        max_tool_hops=8,
-    )
-
-    algo = AttackAlgorithm()
-    cfg  = AttackRunConfig(time_budget_s=TIME_BUDGET_S)
-
-    det_candidates: list[AttackCandidate] = []
-    ticker = _start_ticker("Deterministic", det_candidates)
-    t0 = time.time()
-    try:
-        det_candidates = algo.run(det_env, cfg)
-    except Exception:
-        print("\n❌ Attack raised an exception (deterministic run):")
-        traceback.print_exc()
-    finally:
-        ticker.set()
-
-    print(f"\n  ✅ Finished in {time.time() - t0:.1f}s | {len(det_candidates)} candidate(s)")
-    score_candidates(det_candidates, det_env)
-
-    # ════════════════════════════════════════════════════════════════════════
-    # RUN 2 — OllamaAgent / Gemma-4  (LLM behaviour test)
-    # ════════════════════════════════════════════════════════════════════════
-    print("\n" + "═" * 60)
-    print("▶  RUN 2 — OllamaAgent / Gemma-4  (LLM behaviour test)")
-    print("═" * 60)
-
-    if not ollama_available:
-        print("  ⚠️  Ollama not running on localhost:11434 — skipping LLM run.")
-        print("      Start Ollama with `ollama serve` to enable this run.")
-    else:
-        ollama_agent = OllamaAgent(verbose=True)
-        ollama_env   = SandboxEnv(
+        det_agent = VulnerableDeterministicAgent()
+        det_env   = SandboxEnv(
             seed=42,
             fixtures_dir=FIXTURES_DIR,
-            agent=ollama_agent,
+            agent=det_agent,
             guardrail=Guardrail(),
             max_tool_hops=8,
         )
 
-        algo2 = AttackAlgorithm()
+        algo = AttackAlgorithm()
+        cfg  = AttackRunConfig(time_budget_s=TIME_BUDGET_S)
+
+        det_candidates: list[AttackCandidate] = []
+        ticker = _start_ticker("Deterministic", det_candidates)
         t0 = time.time()
         try:
-            llm_candidates = algo2.run(ollama_env, cfg)
+            det_candidates = algo.run(det_env, cfg)
         except Exception:
-            print("❌ Attack raised an exception (Ollama run):")
+            print("\n❌ Attack raised an exception (deterministic run):")
             traceback.print_exc()
-            llm_candidates = []
+        finally:
+            ticker.set()
 
-        print(f"\n  ✅ Finished in {time.time() - t0:.1f}s | {len(llm_candidates)} candidate(s)")
-        score_candidates(llm_candidates, ollama_env)
+        print(f"\n  ✅ Finished in {time.time() - t0:.1f}s | {len(det_candidates)} candidate(s)")
+        score_candidates(det_candidates, det_env)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # RUN 2 — OllamaAgent / Gemma-4  (LLM behaviour test)
+    # ════════════════════════════════════════════════════════════════════════
+    if not args.only_det:
+        print("\n" + "═" * 60)
+        print("▶  RUN 2 — OllamaAgent / Gemma-4  (LLM behaviour test)")
+        print("═" * 60)
+
+        if not ollama_available:
+            print("  ⚠️  Ollama not running on localhost:11434 — skipping LLM run.")
+            print("      Start Ollama with `ollama serve` to enable this run.")
+        else:
+            ollama_agent = OllamaAgent(verbose=True)
+            ollama_env   = SandboxEnv(
+                seed=42,
+                fixtures_dir=FIXTURES_DIR,
+                agent=ollama_agent,
+                guardrail=Guardrail(),
+                max_tool_hops=8,
+            )
+
+            algo2 = AttackAlgorithm()
+            cfg2 = AttackRunConfig(time_budget_s=TIME_BUDGET_S)
+            t0 = time.time()
+            try:
+                llm_candidates = algo2.run(ollama_env, cfg2)
+            except Exception:
+                print("❌ Attack raised an exception (Ollama run):")
+                traceback.print_exc()
+                llm_candidates = []
+
+            print(f"\n  ✅ Finished in {time.time() - t0:.1f}s | {len(llm_candidates)} candidate(s)")
+            score_candidates(llm_candidates, ollama_env)
+
     print("\n" + "═" * 60)
     print("Done.")

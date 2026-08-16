@@ -227,3 +227,5 @@ PS C:\Users\harsh\Documents\AI agent security> python ollama_test.py Jedv26_dive
 ════════════════════════════════════════════════════════════
 Done.
 PS C:\Users\harsh\Documents\AI agent security> 
+
+# Scored 44.260
