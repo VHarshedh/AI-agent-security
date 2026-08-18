@@ -262,4 +262,4 @@ class AttackAlgorithm(AttackAlgorithmBase):
         )
         return candidates[:MAX_CANDIDATES]
 
-# Scored 81.000
+# Scored 78.615

@@ -58,7 +58,7 @@ TEMPLATES: tuple[tuple[str, str], ...] = (
 )
 
 # Tuning knobs
-DEFAULT_BUDGET_S = 18000.0   # per-model budget (Kaggle = 18000s, 9000s per row)
+DEFAULT_BUDGET_S = 9000.0    # per-model budget (Kaggle = 18000s, 9000s per row)
 HARD_N_CAP = 2000            # SDK MAX_REPLAY_FINDINGS
 FALLBACK_N = 300
 WARMUP_IDX = 899999
@@ -274,3 +274,5 @@ class AttackAlgorithm(AttackAlgorithmBase):
                 if PAYLOAD in data:
                     return True
         return False
+
+# Score : 71.055
