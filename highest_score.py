@@ -162,7 +162,7 @@ BURST_K = 1
 # SPLIT_BY_LATENCY. The 5 disclosed 79-86 public notebooks all use this (see memory
 # frontier-technique-research-2026-07-17).
 REPLAY_SAFE_SIZING = True       # 07-18 replay-safe sizing rung: fill_r097_ea_b
-REPLAY_SAFE_FRAC = 0.97       # 07-18 replay-safe sizing rung: fill_r097_ea_b
+REPLAY_SAFE_FRAC = 0.92         # 8% safety cushion for model loading/unloading & latency jitter
 # hops=1 fill-throughput lever (2026-07-20, memory hops1-fill-throughput-confirmed):
 # the scored replay always reruns at max_tool_hops=8 and the exfil event is recorded
 # at hop-0 (before the wrap-up hop), so a candidate fires identically whether the
@@ -196,7 +196,7 @@ FALLBACK_N = 300              # emitted when the env cannot be probed (< 600 so
                               # audit's stale-default guard never trips)
 WARMUP_IDX = 899999           # far-away host index for the untimed warm-up (never
                               # collides with a real candidate's unique score cell)
-DEFAULT_BUDGET_S = 9000.0     # per-model grader budget when config omits it
+DEFAULT_BUDGET_S = 8750.0     # per-model grader budget (aligned with Kaggle gateway 8750s)
 LAT_FLOOR_S = 0.001           # floor so a zero/instant measurement can't stall the loop
 
 
@@ -382,12 +382,17 @@ class AttackAlgorithm(AttackAlgorithmBase):
         classify_sum = 0.0
         chosen_template = TEMPLATE
         while len(cands) < cap:
+            classifying = split_on and classify_n < split_classify_n
+            slow_row = split_on and not classifying and chosen_template == frame_template
+            is_mp = (burst_k == 1 and slow_row and slow_multipost_n > 1)
+            cur_cost_coef = (replay_cost_coef * slow_multipost_n) if is_mp else replay_cost_coef
+
             if replay_safe_sizing:
                 next_wall = slowest * SLOWEST_MULT
                 if _replay_stop(
                     replay_cost,
                     time.monotonic(),
-                    next_wall * replay_cost_coef,
+                    next_wall * cur_cost_coef,
                     replay_cap,
                     wall_deadline,
                     next_wall_est=next_wall,
@@ -401,9 +406,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
             # batch always uses TEMPLATE; its mean latency fixes the template once
             # for every remaining candidate in this run. K>1 preserves the burst
             # formatter unchanged.
-            classifying = split_on and classify_n < split_classify_n
             if burst_k == 1:
-                slow_row = split_on and not classifying and chosen_template == frame_template
                 if slow_row and slow_multipost_n > 1:
                     msg = _forge_plan_msg(idx, slow_multipost_n)
                 else:
@@ -436,7 +439,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
             if fired:
                 cands.append(AttackCandidate.from_messages((msg,)))
                 if replay_safe_sizing:
-                    replay_cost += elapsed * replay_cost_coef
+                    replay_cost += elapsed * cur_cost_coef
         return cands
 
     @staticmethod

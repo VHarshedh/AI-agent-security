@@ -267,25 +267,29 @@ class OllamaAgent:
 # Shared scoring helper
 # ===========================================================================
 
-def score_candidates(candidates: list[AttackCandidate], env: SandboxEnv) -> None:
-    """Re-run each candidate through env, score with official SDK, print results."""
+def score_candidates(candidates: list[AttackCandidate], env: SandboxEnv, max_cands: int | None = None) -> None:
+    """Re-run candidates through env, score with official SDK, print results."""
     if not candidates:
         print("  ⚠️  No candidates returned.")
         return
+
+    eval_list = candidates[:max_cands] if (max_cands is not None and max_cands > 0) else candidates
+    total_cands = len(eval_list)
 
     print(f"\n  First 3 candidates:")
     for i, c in enumerate(candidates[:3]):
         msgs = list(getattr(c, "user_messages", getattr(c, "prompts", [])))
         print(f"    [{i+1}] {len(msgs)} turn(s): {[m[:50] for m in msgs]}")
 
-    print(f"\n  ⏳ Evaluating all {len(candidates)} candidates that passed during the run...")
+    if total_cands < len(candidates):
+        print(f"\n  ⏳ Evaluating {total_cands}/{len(candidates)} candidates (--max-score-cands limit)...")
+    else:
+        print(f"\n  ⏳ Evaluating all {total_cands} candidates that passed during the run...")
+
     findings = []
     hits = 0
     t_start = time.time()
-    total_cands = len(candidates)
-    for idx, cand in enumerate(candidates, 1):
-        if idx % 50 == 0 or idx == total_cands:
-            print(f"    ... evaluated {idx}/{total_cands} candidates ({time.time() - t_start:.1f}s)", flush=True)
+    for idx, cand in enumerate(eval_list, 1):
         env.reset()
         msgs = list(getattr(cand, "user_messages", getattr(cand, "prompts", [])))
         for m in msgs:
@@ -302,11 +306,22 @@ def score_candidates(candidates: list[AttackCandidate], env: SandboxEnv) -> None
             hits += 1
             print(f"    ✅ {p['predicate']} sev={p['severity']} | {[m[:40] for m in msgs]}")
 
+        if idx % 10 == 0 or idx == total_cands:
+            elapsed = time.time() - t_start
+            rate = elapsed / idx
+            eta = rate * (total_cands - idx)
+            print(f"    ... evaluated {idx}/{total_cands} candidates ({elapsed:.1f}s, ~{rate:.1f}s/cand, ETA: {eta:.0f}s)", flush=True)
+
     raw  = score_attack_raw(findings)
     norm = score_attack(findings)
-    print(f"\n  📊 Final Evaluated Score ({hits} predicate hits across {len(findings)} candidates):")
+    print(f"\n  📊 Evaluated Score ({hits} predicate hits across {len(findings)} evaluated candidates):")
     print(f"     raw  = {raw:.2f}")
     print(f"     norm = {norm:.6f}")
+    if len(eval_list) < len(candidates):
+        # Extrapolate estimated full score
+        ratio = len(candidates) / len(eval_list)
+        print(f"     projected raw  ~ {raw * ratio:.2f}")
+        print(f"     projected norm ~ {min(1000.0, norm * ratio):.6f}")
     if hits == 0:
         print("  ⚠️  0 predicate hits — guardrail blocks all paths.")
 
@@ -341,6 +356,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Dual-Agent Test Harness for AI Agent Security attacks")
     parser.add_argument("attack_file", nargs="?", default="attack.py", help="Path to attack Python file (default: attack.py)")
     parser.add_argument("--budget", type=int, default=3600, help="Time budget in seconds per agent (default: 3600)")
+    parser.add_argument("--max-score-cands", type=int, default=None, help="Max candidates to replay during post-run scoring (default: all)")
     parser.add_argument("--only-ollama", action="store_true", help="Run only the Ollama LLM agent test")
     parser.add_argument("--only-det", action="store_true", help="Run only the deterministic mock agent test")
     args = parser.parse_args()
@@ -354,6 +370,8 @@ if __name__ == "__main__":
 
     TIME_BUDGET_S = args.budget
     print(f"⏱️  Time budget per agent: {TIME_BUDGET_S}s")
+    if args.max_score_cands is not None:
+        print(f"🎯 Max score candidates limit: {args.max_score_cands}")
     print("=" * 60)
 
     # ── Check Ollama availability once ───────────────────────────────────────
@@ -398,7 +416,7 @@ if __name__ == "__main__":
             ticker.set()
 
         print(f"\n  ✅ Finished in {time.time() - t0:.1f}s | {len(det_candidates)} candidate(s)")
-        score_candidates(det_candidates, det_env)
+        score_candidates(det_candidates, det_env, max_cands=args.max_score_cands)
 
     # ════════════════════════════════════════════════════════════════════════
     # RUN 2 — OllamaAgent / Gemma-4  (LLM behaviour test)
@@ -432,7 +450,7 @@ if __name__ == "__main__":
                 llm_candidates = []
 
             print(f"\n  ✅ Finished in {time.time() - t0:.1f}s | {len(llm_candidates)} candidate(s)")
-            score_candidates(llm_candidates, ollama_env)
+            score_candidates(llm_candidates, ollama_env, max_cands=args.max_score_cands)
 
     print("\n" + "═" * 60)
     print("Done.")
