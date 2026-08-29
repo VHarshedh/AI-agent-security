@@ -89,7 +89,7 @@ SLOWEST0            = 25.0   # seed estimate for slowest observed latency
 SLOWEST_MULT        = 1.35   # cushion multiplier on observed slowest
 MARGIN_FLOOR_MIN    = 3.0    # adaptive margin minimum for fast models
 MARGIN_SLOWEST_COEF = 2.5    # ramp rate toward MARGIN_S
-FILL_BUDGET_FRAC    = 0.97   # budget allocation for fill phase
+FILL_BUDGET_FRAC    = 0.985  # budget allocation for fill phase
 HARD_N_CAP          = 2000   # SDK MAX_REPLAY_FINDINGS
 FALLBACK_N          = 300    # blind emit when env is not probeable
 WARMUP_IDX          = 999999 # untimed warm-up candidate index
@@ -99,11 +99,11 @@ LAT_FLOOR_S         = 0.001  # floor so zero measurement cannot stall loop
 # Per-model split & classification
 SPLIT_BY_LATENCY    = True
 SPLIT_THRESHOLD_S   = 12.0   # >12s mean -> slow model (gpt_oss); <=12s -> fast (gemma4)
-SPLIT_CLASSIFY_N    = 6      # 6 sample probes before locking chosen template
+SPLIT_CLASSIFY_N    = 4      # 4 clean TEMPLATE probes for latency measurement
 
 # Replay-safe sizing
 REPLAY_SAFE_SIZING  = True
-REPLAY_SAFE_FRAC    = 0.92   # 8% safety cushion for model loading/unloading & latency jitter
+REPLAY_SAFE_FRAC    = 0.985  # 1.5% safety cushion (aligned with Kaggle gateway 8750s)
 REPLAY_BUDGET_MULT  = 1.0
 
 # hop-1 fill throughput lever
@@ -302,11 +302,8 @@ class AttackAlgorithm(AttackAlgorithmBase):
 
             if burst_k == 1:
                 if classifying:
-                    # Alternating probe: Probe A vs Probe B
-                    if classify_n % 2 == 0:
-                        msg = _msg(idx, frame_template)      # Probe A (analysis channel)
-                    else:
-                        msg = _msg(idx, commentary_tmpl)     # Probe B (commentary channel)
+                    # Clean TEMPLATE for measurement probes to avoid token corruption on Gemma4
+                    msg = _msg(idx, TEMPLATE)
                 elif is_slow_row:
                     if slow_mp_n > 1 and chosen_template != TEMPLATE:
                         msg = _forge_plan_msg(idx, slow_mp_n)
@@ -331,23 +328,15 @@ class AttackAlgorithm(AttackAlgorithmBase):
             if classifying:
                 classify_n   += 1
                 classify_sum += elapsed
-                if fired:
-                    if classify_n % 2 == 1:
-                        classify_probe_a_fires += 1
-                    else:
-                        classify_probe_b_fires += 1
 
                 if classify_n == split_classify_n:
                     mean_lat = classify_sum / classify_n
                     is_slow_row = mean_lat > split_threshold
                     if is_slow_row:
-                        # Slow row (gpt_oss): lock in best performing injection
-                        if classify_probe_b_fires >= classify_probe_a_fires:
-                            chosen_template = commentary_tmpl
-                        else:
-                            chosen_template = frame_template
+                        # FRAME_TEMPLATE is the proven 88.4 baseline for GPT-OSS
+                        chosen_template = frame_template
                     else:
-                        # Fast row (gemma4): use hardened Gemma template
+                        # GEMMA_TEMPLATE is the hardened directive for Gemma4
                         chosen_template = gemma_template
 
             if fired:

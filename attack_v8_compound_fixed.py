@@ -89,18 +89,18 @@ _DEFAULT_BUDGET_S = 8750.0   # per-model budget (aligned with Kaggle gateway 875
 _MARGIN_S         = 37.0   # U3: proven yusuke ladder (was 45)
 _SLOWEST0         = 25.0
 _SLOWEST_MULT     = 1.35
-_FILL_FRAC        = 0.96
+_FILL_FRAC        = 0.985
 _HOPS             = 8
 _WARMUP_IDX       = 999_999
 _LAT_FLOOR_S      = 0.001
 
 # Replay-safe sizing
-_REPLAY_SAFE_FRAC  = 0.92   # 8% safety cushion for model loading/unloading & latency jitter
+_REPLAY_SAFE_FRAC   = 0.985  # 1.5% safety cushion (was 0.92, leaving 700s idle)
 _REPLAY_BUDGET_MULT = 1.0
 
 # Per-model classification
-_SPLIT_THRESHOLD_S = 12.0  # >12s mean → slow model (gpt_oss); ≤12s → fast (gemma4)
-_SPLIT_CLASSIFY_N  = 6     # 6 probes: 3 pairs of (frame, commentary) or (gemma, gemma)
+_SPLIT_THRESHOLD_S  = 12.0   # >12s mean → slow model (gpt_oss); ≤12s → fast (gemma4)
+_SPLIT_CLASSIFY_N   = 4      # 4 clean TEMPLATE probes (was 6 with raw tokens)
 
 # PROBE_HOPS: probe single-turn at hops=1 (~1.5-2x faster); cost coef corrects
 # replay estimate back to full hops=8 cost. (U4)
@@ -344,15 +344,9 @@ class AttackAlgorithm(AttackAlgorithmBase):
 
             # Template selection
             if classifying:
-                # Alternate between two templates to race them during classification.
-                # Slow row candidates: even=FRAME_TEMPLATE, odd=COMMENTARY_TEMPLATE
-                # Fast row candidates: even=TEMPLATE, odd=GEMMA_TEMPLATE
-                # We don't know the row yet, so probe FRAME (even) and COMMENTARY (odd)
-                # for the first 6 probes; latency determines slow/fast.
-                if classify_n % 2 == 0:
-                    msg = _msg(idx, _FRAME_TEMPLATE)     # probe A: frame/analysis
-                else:
-                    msg = _msg(idx, _COMMENTARY_TEMPLATE) # probe B: commentary forge
+                # Use clean _TEMPLATE for measurement probes to ensure high trigger rate
+                # and avoid Harmony token syntax noise on Gemma4 row
+                msg = _msg(idx, _TEMPLATE)
             elif is_slow_row:
                 # Slow row fill: use winning template; switch to forge-plan if multi-post
                 if _SLOW_MULTIPOST_N > 1 and chosen_template != _TEMPLATE:
@@ -374,37 +368,19 @@ class AttackAlgorithm(AttackAlgorithmBase):
             elapsed = max(time.monotonic() - t0, _LAT_FLOOR_S)
             slowest = max(slowest, elapsed)
 
-            # Classification: track fires per template, determine model row
+            # Classification: determine model row and set row-tailored template
             if classifying:
                 classify_n   += 1
                 classify_sum += elapsed
-                if fired:
-                    if classify_n % 2 == 1:    # just finished odd probe (was even-indexed)
-                        classify_a_fires += 1  # frame template fired
-                    else:
-                        classify_b_fires += 1  # commentary template fired
-
                 if classify_n == _SPLIT_CLASSIFY_N:
                     mean_lat = classify_sum / classify_n
                     is_slow_row = mean_lat > _SPLIT_THRESHOLD_S
                     if is_slow_row:
-                        # Slow row (gpt_oss): pick best-firing template
-                        chosen_template = (
-                            _COMMENTARY_TEMPLATE
-                            if classify_b_fires >= classify_a_fires
-                            else _FRAME_TEMPLATE
-                        )
+                        # Slow row (gpt_oss): FRAME_TEMPLATE is the proven 88.4 baseline
+                        chosen_template = _FRAME_TEMPLATE
                     else:
-                        # Fast row (gemma4): pick best-firing template
-                        chosen_template = (
-                            _GEMMA_TEMPLATE
-                            if classify_b_fires >= classify_a_fires
-                            else _TEMPLATE
-                        )
-                        # Re-probe fast row with gemma-specific template if commentary won
-                        # (commentary is gpt_oss specific; gemma needs its own fast template)
-                        if chosen_template == _COMMENTARY_TEMPLATE:
-                            chosen_template = _GEMMA_TEMPLATE
+                        # Fast row (gemma4): GEMMA_TEMPLATE is the hardened directive
+                        chosen_template = _GEMMA_TEMPLATE
 
             if fired:
                 cands.append(AttackCandidate.from_messages((msg,)))

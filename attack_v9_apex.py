@@ -149,7 +149,7 @@ SLOWEST0            = 25.0   # seed estimate for slowest observed latency
 SLOWEST_MULT        = 1.35   # cushion multiplier on observed slowest
 MARGIN_FLOOR_MIN    = 3.0    # adaptive margin minimum for fast models (vs 4.0 in predecessors)
 MARGIN_SLOWEST_COEF = 2.5    # ramp rate toward MARGIN_S
-FILL_BUDGET_FRAC    = 0.97   # fraction of per-model budget for fill (vs 0.95/0.96)
+FILL_BUDGET_FRAC    = 0.985  # fraction of per-model budget for fill
 HARD_N_CAP          = 2000   # SDK MAX_REPLAY_FINDINGS
 FALLBACK_N          = 300    # blind emit when env is not probeable (<600 audit guard)
 WARMUP_IDX          = 899999 # far-away index for untimed warm-up (never collides)
@@ -159,11 +159,11 @@ LAT_FLOOR_S         = 0.001  # floor so zero measurement cannot stall the loop
 # -- Per-model split ---------------------------------------------------------------
 SPLIT_BY_LATENCY    = True
 SPLIT_THRESHOLD_S   = 12.0   # >12s mean → slow model (gpt_oss); <=12s → fast (gemma)
-SPLIT_CLASSIFY_N    = 5      # candidates sampled before fixing template (vs 8; saves ~3 probes)
+SPLIT_CLASSIFY_N    = 4      # 4 clean TEMPLATE probes for accurate latency measurement
 
 # -- Replay-safe sizing ------------------------------------------------------------
 REPLAY_SAFE_SIZING  = True
-REPLAY_SAFE_FRAC    = 0.92   # 8% safety cushion for model loading/unloading & latency jitter
+REPLAY_SAFE_FRAC    = 0.985  # 1.5% safety cushion (aligned with Kaggle gateway 8750s)
 REPLAY_BUDGET_MULT  = 1.0    # replay budget = run budget * this
 
 # -- hop-1 fill throughput lever ---------------------------------------------------
@@ -372,31 +372,11 @@ class AttackAlgorithm(AttackAlgorithmBase):
                 if time.monotonic() + max(slowest * SLOWEST_MULT, margin) >= deadline:
                     break
 
-            # -- Compound top-up trigger ------------------------------------------
-            elapsed_frac = (time.monotonic() - run_start) / budget
-            if (not compound_tried) and (
-                elapsed_frac >= compound_trigger or len(cands) >= cap
-            ):
-                compound_tried = True
-                compound_new = self._compound_fill(
-                    env=env,
-                    hops=hops,
-                    start_idx=HARD_N_CAP * 10,
-                    cap=cap - len(cands),
-                    deadline=deadline,
-                    margin_s=COMPOUND_MARGIN_S,
-                    pages=COMPOUND_PROBE_PAGES,
-                )
-                cands.extend(compound_new)
-                break
-
-            # -- Template selection (split by latency + commentary race) -----------
+            # -- Template selection (split by latency) -----------------------------
             if burst_k == 1:
                 if classifying:
-                    if classify_n % 2 == 0:
-                        msg = _msg(idx, frame_template)
-                    else:
-                        msg = _msg(idx, commentary_tmpl)
+                    # Clean TEMPLATE for measurement probes to avoid token corruption on Gemma4
+                    msg = _msg(idx, TEMPLATE)
                 elif is_slow_row:
                     if slow_mp_n > 1 and chosen_template != TEMPLATE:
                         msg = _forge_plan_msg(idx, slow_mp_n)
@@ -421,27 +401,34 @@ class AttackAlgorithm(AttackAlgorithmBase):
             if classifying:
                 classify_n   += 1
                 classify_sum += elapsed
-                if fired:
-                    if classify_n % 2 == 1:
-                        classify_probe_a_fires += 1
-                    else:
-                        classify_probe_b_fires += 1
 
                 if classify_n == split_classify_n:
                     mean_lat = classify_sum / classify_n
                     is_slow_row = mean_lat > split_threshold
                     if is_slow_row:
-                        if classify_probe_b_fires >= classify_probe_a_fires:
-                            chosen_template = commentary_tmpl
-                        else:
-                            chosen_template = frame_template
+                        # FRAME_TEMPLATE is the proven 88.4 baseline for GPT-OSS
+                        chosen_template = frame_template
                     else:
+                        # GEMMA_TEMPLATE is the hardened directive for Gemma4
                         chosen_template = gemma_template
 
             if fired:
                 cands.append(AttackCandidate.from_messages((msg,)))
                 if replay_safe:
                     replay_cost += elapsed * cur_cost_coef
+
+        # -- Post-fill Compound top-up (Phase 2) -----------------------------------
+        if len(cands) < cap and time.monotonic() + COMPOUND_MARGIN_S * 2 < deadline:
+            compound_new = self._compound_fill(
+                env=env,
+                hops=hops,
+                start_idx=HARD_N_CAP * 10,
+                cap=cap - len(cands),
+                deadline=deadline,
+                margin_s=COMPOUND_MARGIN_S,
+                pages=COMPOUND_PROBE_PAGES,
+            )
+            cands.extend(compound_new)
 
         return cands
 

@@ -1,9 +1,24 @@
 *.zip*
 .*env*
-__pycache__/
 _sdk_extracted/
 .claude
 .codex
 Claude.md
 .cursorrules
 Chat history.txt
+.agents/
+# Strict AI Agent Blockers
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Heavy Context Metadata Banishment
+.sdk_extracted/
+aicomp_sdk.egg-info/
+aicomp-sdk-*/
+kaggle_evaluation/
+*.log
+*.txt
