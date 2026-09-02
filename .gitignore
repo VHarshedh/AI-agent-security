@@ -4,6 +4,7 @@ _sdk_extracted/
 .claude
 .codex
 Claude.md
+GEMINI.md
 .cursorrules
 Chat history.txt
 .agents/
